@@ -103,7 +103,7 @@ function App() {
     try {
       await invoke('save_log', { content: newLog, logType: 'manual' });
       setNewLog('');
-      loadLogs();
+      await loadLogs(); // Await the refresh
     } catch (e) {
       alert('Failed to save log: ' + e);
     }
@@ -113,7 +113,7 @@ function App() {
       if (!confirm('Delete this log?')) return;
       try {
           await invoke('delete_log', { id });
-          loadLogs();
+          await loadLogs(); // Await the refresh
       } catch (e) {
           alert('Failed to delete log: ' + e);
       }
