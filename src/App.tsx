@@ -108,6 +108,16 @@ function App() {
       alert('Failed to save log: ' + e);
     }
   };
+  
+  const handleDeleteLog = async (id: number) => {
+      if (!confirm('Delete this log?')) return;
+      try {
+          await invoke('delete_log', { id });
+          loadLogs();
+      } catch (e) {
+          alert('Failed to delete log: ' + e);
+      }
+  };
 
   const handleSyncGit = async () => {
     if (gitPaths.length === 0) {
@@ -220,9 +230,29 @@ function App() {
             
             <div className="space-y-4">
                {logs.map(log => (
-                 <div key={log.id} className="log-item">
-                    <span className="timestamp-pill">{log.timestamp.split(' ')[1].substring(0,5)}</span>
-                    <span style={{ color: '#e2e8f0' }}>{log.content}</span>
+                 <div key={log.id} className="log-item" style={{justifyContent: 'space-between'}}>
+                    <div style={{display: 'flex', gap: '12px', alignItems: 'flex-start'}}>
+                        <span className="timestamp-pill">{log.timestamp.split(' ')[1].substring(0,5)}</span>
+                        <span style={{ color: '#e2e8f0' }}>{log.content}</span>
+                    </div>
+                    <button 
+                        onClick={() => handleDeleteLog(log.id!)}
+                        className="delete-btn"
+                        style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: '#94a3b8',
+                            cursor: 'pointer',
+                            padding: '4px',
+                            opacity: 0.6,
+                            transition: 'all 0.2s',
+                            fontSize: '0.9em'
+                        }}
+                        onMouseOver={(e) => e.currentTarget.style.color = '#ef4444'}
+                        onMouseOut={(e) => e.currentTarget.style.color = '#94a3b8'}
+                    >
+                        🗑️
+                    </button>
                  </div>
                ))}
                

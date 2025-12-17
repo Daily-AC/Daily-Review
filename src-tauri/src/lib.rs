@@ -69,6 +69,18 @@ fn save_log(state: State<DbState>, content: String, log_type: String) -> Result<
 }
 
 #[tauri::command]
+fn delete_log(state: State<DbState>, id: i64) -> Result<String, String> {
+    let conn = state.conn.lock().map_err(|_| "Failed to lock db".to_string())?;
+    
+    conn.execute(
+        "DELETE FROM logs WHERE id = ?1",
+        [&id],
+    ).map_err(|e| e.to_string())?;
+    
+    Ok("Log deleted successfully".to_string())
+}
+
+#[tauri::command]
 fn get_today_logs(state: State<DbState>) -> Result<Vec<LogItem>, String> {
     let conn = state.conn.lock().map_err(|_| "Failed to lock db".to_string())?;
     
@@ -111,8 +123,6 @@ fn scan_git_repos(paths: Vec<String>) -> Result<Vec<GitCommit>, String> {
             .args(&["-C", &path, "log", "--since=midnight", "--pretty=format:%H|%s|%an|%at"])
             .output();
 
-        // Skip failures for individual repos, just log them?
-        // For now, if one fails, we just continue
         if let Ok(out) = output {
              if out.status.success() {
                  let stdout = String::from_utf8_lossy(&out.stdout);
@@ -175,6 +185,7 @@ pub fn run() {
         .manage(db_state)
         .invoke_handler(tauri::generate_handler![
             save_log, 
+            delete_log, // Added here
             get_today_logs,
             scan_git_repos,
             call_ai
