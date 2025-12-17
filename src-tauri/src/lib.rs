@@ -29,15 +29,15 @@ pub struct DbState {
 }
 
 impl DbState {
-    fn init() -> Result<Self> {
-        let conn = Connection::open("daily_assistant.db")?;
+    fn init(path: std::path::PathBuf) -> Result<Self> {
+        let conn = Connection::open(path)?;
         
         conn.execute(
             "CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY,
                 content TEXT NOT NULL,
                 log_type TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                timestamp DATETIME DEFAULT (datetime('now', 'localtime'))
             )",
             [],
         )?;
@@ -61,7 +61,7 @@ fn save_log(state: State<DbState>, content: String, log_type: String) -> Result<
     let conn = state.conn.lock().map_err(|_| "Failed to lock db".to_string())?;
     
     conn.execute(
-        "INSERT INTO logs (content, log_type) VALUES (?1, ?2)",
+        "INSERT INTO logs (content, log_type, timestamp) VALUES (?1, ?2, datetime('now', 'localtime'))",
         [&content, &log_type],
     ).map_err(|e| e.to_string())?;
     
@@ -179,13 +179,20 @@ async fn call_ai(request: AiRequest) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let db_state = DbState::init().expect("Failed to initialize database");
-
     tauri::Builder::default()
-        .manage(db_state)
+        .setup(|app| {
+            let app_handle = app.handle();
+            let app_data_dir = app.path().app_data_dir().expect("failed to get app data dir");
+            std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
+            let db_path = app_data_dir.join("daily_assistant.db");
+            
+            let db_state = DbState::init(db_path).expect("Failed to initialize database");
+            app.manage(db_state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             save_log, 
-            delete_log, // Added here
+            delete_log,
             get_today_logs,
             scan_git_repos,
             call_ai
