@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+default-run = "da"
+
+[[bin]]
+name = "da"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -23,3 +28,4 @@ rusqlite = { version = "0.37.0", features = ["bundled"] }
 tokio = "1.48.0"
 # git2 removed to avoid build issues
 reqwest = { version = "0.12.26", features = ["json"] }
+clap = { version = "4.5.53", features = ["derive"] }
