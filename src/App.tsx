@@ -16,7 +16,19 @@ interface GitCommit {
   author: string;
   time: number;
   repo_name?: string;
-  diff?: string; // Added diff
+  diff?: string;
+}
+
+// Backend Config Interface
+interface AppConfig {
+    api_key: string;
+    git_paths: string[];
+    provider: string;
+    model: string;
+    base_url: string | null;
+    custom_rules: string;
+    report_template: string;
+    deep_analysis: boolean;
 }
 
 function App() {
@@ -26,48 +38,35 @@ function App() {
   const [newLog, setNewLog] = useState('');
   
   // Settings State
-  const [apiKey, setApiKey] = useState('');
-  const [gitPaths, setGitPaths] = useState<string[]>([]);
-  const [newGitPath, setNewGitPath] = useState('');
-  const [apiProvider, setApiProvider] = useState('openai');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [modelName, setModelName] = useState('gpt-4o');
-  const [deepAnalysis, setDeepAnalysis] = useState(false); // New State
-  
-  // Custom Rules
-  const [customRules, setCustomRules] = useState('');
-  const [reportTemplate, setReportTemplate] = useState(`Example:
-1. Progress: ...
-2. Problems: ...
-3. Plan for tomorrow: ...`);
+  const [config, setConfig] = useState<AppConfig>({
+      api_key: '',
+      git_paths: [],
+      provider: 'openai',
+      model: 'gpt-4o',
+      base_url: null,
+      custom_rules: '',
+      report_template: '',
+      deep_analysis: false
+  });
 
+  const [newGitPath, setNewGitPath] = useState('');
+  
   // Review State
   const [reviewResult, setReviewResult] = useState('');
   const [reviewMode, setReviewMode] = useState<'analysis' | 'export'>('analysis');
   const [isAiLoading, setIsAiLoading] = useState(false);
 
   useEffect(() => {
-    // Load Settings
-    const savedKey = localStorage.getItem('apiKey');
-    const savedPaths = localStorage.getItem('gitPaths'); 
-    const savedProvider = localStorage.getItem('apiProvider');
-    const savedBaseUrl = localStorage.getItem('baseUrl');
-    const savedModel = localStorage.getItem('modelName');
-    const savedRules = localStorage.getItem('customRules');
-    const savedTemplate = localStorage.getItem('reportTemplate');
-    const savedDeepAnalysis = localStorage.getItem('deepAnalysis');
-    
-    if (savedKey) setApiKey(savedKey);
-    if (savedPaths) {
-        try { setGitPaths(JSON.parse(savedPaths)); } catch (e) { console.error('Failed', e); }
-    }
-    if (savedProvider) setApiProvider(savedProvider);
-    if (savedBaseUrl) setBaseUrl(savedBaseUrl);
-    if (savedModel) setModelName(savedModel);
-    if (savedRules) setCustomRules(savedRules);
-    if (savedTemplate) setReportTemplate(savedTemplate);
-    if (savedDeepAnalysis) setDeepAnalysis(savedDeepAnalysis === 'true');
-
+    // Load Config from Backend
+    const init = async () => {
+        try {
+            const loadedConfig = await invoke<AppConfig>('get_config');
+            setConfig(loadedConfig);
+        } catch (e) {
+            console.error('Failed to load config', e);
+        }
+    };
+    init();
     loadLogs();
   }, []);
 
@@ -80,27 +79,28 @@ function App() {
     }
   };
 
-  const saveSettings = () => {
-    localStorage.setItem('apiKey', apiKey);
-    localStorage.setItem('gitPaths', JSON.stringify(gitPaths));
-    localStorage.setItem('apiProvider', apiProvider);
-    localStorage.setItem('baseUrl', baseUrl);
-    localStorage.setItem('modelName', modelName);
-    localStorage.setItem('customRules', customRules);
-    localStorage.setItem('reportTemplate', reportTemplate);
-    localStorage.setItem('deepAnalysis', String(deepAnalysis));
-    alert('Settings Saved Successfully!');
+  const saveSettings = async () => {
+    try {
+        await invoke('save_config', { config });
+        alert('Settings Saved Successfully to Backend!');
+    } catch (e) {
+        alert('Failed to save settings: ' + e);
+    }
+  };
+
+  const updateConfig = (key: keyof AppConfig, value: any) => {
+      setConfig(prev => ({ ...prev, [key]: value }));
   };
 
   const addGitPath = () => {
-      if(newGitPath && !gitPaths.includes(newGitPath)) {
-          setGitPaths([...gitPaths, newGitPath]);
+      if(newGitPath && !config.git_paths.includes(newGitPath)) {
+          updateConfig('git_paths', [...config.git_paths, newGitPath]);
           setNewGitPath('');
       }
   };
 
   const removeGitPath = (pathToRemove: string) => {
-      setGitPaths(gitPaths.filter(p => p !== pathToRemove));
+      updateConfig('git_paths', config.git_paths.filter(p => p !== pathToRemove));
   };
 
   const handleAddLog = async () => {
@@ -125,19 +125,18 @@ function App() {
   };
 
   const handleSyncGit = async () => {
-    if (gitPaths.length === 0) {
+    if (config.git_paths.length === 0) {
       alert('Please configure Git Repo Paths in Settings first.');
       setActiveTab('settings');
       return;
     }
     try {
-      // Pass deepAnalysis param (camelCase for Tauri)
       const commits = await invoke<GitCommit[]>('scan_git_repos', { 
-          paths: gitPaths, 
-          deepAnalysis: deepAnalysis 
+          paths: config.git_paths, 
+          deepAnalysis: config.deep_analysis 
       });
       setGitLogs(commits);
-      if (deepAnalysis) {
+      if (config.deep_analysis) {
           alert(`Synced ${commits.length} commits with deep analysis.`);
       }
     } catch (e) {
@@ -145,9 +144,25 @@ function App() {
     }
   };
 
+  // Deprecated on Frontend, but kept for immediate preview or fallbacks
+  // Ideally backend generates prompt now, but for frontend 'generatePrompt' we can keep or remove.
+  // We'll keep a simple version or just rely on backend info if logic is fully moved.
+  // Actually, for immediate GUI feedback, the frontend might still constructing the prompt text to send?
+  // Wait, the backend command `call_ai` expects `prompt` string in `AiRequest`.
+  // The Backend Logic `generate_prompt_logic` is internal helper.
+  // Let's check `lib.rs`: `call_ai` takes `AiRequest` which has `prompt`.
+  // The CLI `Review` command calls `generate_prompt_logic` then `call_ai`.
+  // The GUI calls `call_ai`. So GUI MUST still generate the prompt OR we need a new Tauri command `generate_review` that internally does it all.
+  // Checking `lib.rs` again... `Commands::Review` does the internal logic.
+  // `call_ai` is raw.
+  // To keep it clean, I should probably expose a `ai_review_workflow` command or similar?
+  // OR just update frontend to duplicate logic (current state) OR `invoke('generate_prompt', ...)`?
+  // `lib.rs` does NOT expose `generate_prompt` as a tauri command.
+  // However, I can still generate prompt in frontend using the config state.
+  // I will maintain frontend prompt gen for now to minimize risk, utilizing the new config state.
+
   const generatePrompt = (type: 'analysis' | 'export') => {
       const logsText = logs.map(l => `- ${l.content}`).join('\n');
-      // Include diffs in prompt
       const gitText = gitLogs.map(g => {
           let text = `- [${g.repo_name}] ${g.message}`;
           if (g.diff) {
@@ -160,7 +175,7 @@ function App() {
       if (type === 'analysis') {
           baseInstruction = "Provide a comprehensive summary, 3 improvements, and 1 key knowledge point. If code diffs are provided, use them to explain technical details.";
       } else {
-          baseInstruction = `Strictly follow the format below:\n\nFormat Template:\n${reportTemplate}`;
+          baseInstruction = `Strictly follow the format below:\n\nFormat Template:\n${config.report_template}`;
       }
 
       return `
@@ -175,12 +190,12 @@ function App() {
         ${baseInstruction}
         
         Additional User Rules:
-        ${customRules}
+        ${config.custom_rules}
       `;
   };
 
   const handleAiReview = async (mode: 'analysis' | 'export') => {
-    if (!apiKey) {
+    if (!config.api_key) {
       alert('Please configure API Key in Settings first.');
       setActiveTab('settings');
       return;
@@ -191,11 +206,11 @@ function App() {
       const prompt = generatePrompt(mode);
       const response = await invoke<string>('call_ai', { 
         request: {
-          provider: apiProvider,
-          api_key: apiKey,
-          model: modelName,
+          provider: config.provider,
+          api_key: config.api_key,
+          model: config.model,
           prompt: prompt,
-          base_url: baseUrl || null 
+          base_url: config.base_url 
         }
       });
       setReviewResult(response);
@@ -228,7 +243,7 @@ function App() {
         <nav className="tab-nav">
           <button className={`tab-btn ${activeTab === 'log' ? 'active' : ''}`} onClick={() => setActiveTab('log')}>Today</button>
           <button className={`tab-btn ${activeTab === 'review' ? 'active' : ''}`} onClick={() => setActiveTab('review')}>Review</button>
-          <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>settings</button>
+          <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Settings</button>
         </nav>
       </header>
       
@@ -245,7 +260,7 @@ function App() {
               />
               <button className="glass-button btn-primary" onClick={handleAddLog}>Add Note</button>
               <button className="glass-button" onClick={handleSyncGit}>
-                  {deepAnalysis ? 'Sync Deep' : 'Sync Git'}
+                  {config.deep_analysis ? 'Sync Deep' : 'Sync Git'}
               </button>
             </div>
             
@@ -281,7 +296,7 @@ function App() {
                    <div style={{ marginTop: '32px', marginBottom: '16px' }}>
                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: '12px'}}>
                             <h3 className="text-secondary text-sm">GIT ACTIVITY ({gitLogs.length})</h3>
-                            {deepAnalysis && <span style={{fontSize:'0.7rem', color:'#22d3ee', border:'1px solid #22d3ee', padding:'2px 6px', borderRadius:'4px'}}>Deep Analysis ON</span>}
+                            {config.deep_analysis && <span style={{fontSize:'0.7rem', color:'#22d3ee', border:'1px solid #22d3ee', padding:'2px 6px', borderRadius:'4px'}}>Deep Analysis ON</span>}
                        </div>
                        {gitLogs.map((commit, idx) => (
                          <div key={idx} className="log-item" style={{ borderLeft: '3px solid #22d3ee' }}>
@@ -357,7 +372,7 @@ function App() {
              {!reviewResult && !isAiLoading && (
                  <div style={{ textAlign: 'center', marginTop: '100px', color: 'var(--text-secondary)' }}>
                      <p>Ready to analyze {logs.length} logs and {gitLogs.length} commits.</p>
-                     {deepAnalysis && <p style={{color: '#22d3ee', fontSize: '0.9rem', marginTop:'8px'}}>Deep Analysis Enabled</p>}
+                     {config.deep_analysis && <p style={{color: '#22d3ee', fontSize: '0.9rem', marginTop:'8px'}}>Deep Analysis Enabled</p>}
                  </div>
              )}
           </div>
@@ -371,7 +386,7 @@ function App() {
                    
                    <div className="mb-4">
                      <label>AI Provider</label>
-                     <select value={apiProvider} onChange={(e) => setApiProvider(e.target.value)}>
+                     <select value={config.provider} onChange={(e) => updateConfig('provider', e.target.value)}>
                        <option value="openai">OpenAI / Compatible</option>
                        <option value="anthropic">Anthropic</option>
                        <option value="gemini">Gemini</option>
@@ -381,8 +396,8 @@ function App() {
                    <div className="mb-4">
                      <label>Base URL <span className="text-secondary" style={{opacity:0.5}}>(Optional)</span></label>
                      <input 
-                        value={baseUrl} 
-                        onChange={(e) => setBaseUrl(e.target.value)} 
+                        value={config.base_url || ''} 
+                        onChange={(e) => updateConfig('base_url', e.target.value)} 
                         placeholder="https://api.example.com/v1" 
                      />
                    </div>
@@ -390,8 +405,8 @@ function App() {
                    <div className="mb-4">
                      <label>Model Name</label>
                      <input 
-                        value={modelName} 
-                        onChange={(e) => setModelName(e.target.value)} 
+                        value={config.model} 
+                        onChange={(e) => updateConfig('model', e.target.value)} 
                         placeholder="gpt-4o" 
                      />
                    </div>
@@ -400,8 +415,8 @@ function App() {
                      <label>API Key</label>
                      <input 
                         type="password" 
-                        value={apiKey} 
-                        onChange={(e) => setApiKey(e.target.value)} 
+                        value={config.api_key} 
+                        onChange={(e) => updateConfig('api_key', e.target.value)} 
                         placeholder="sk-..." 
                      />
                    </div>
@@ -432,13 +447,13 @@ function App() {
                         borderRadius: '8px',
                         padding: '8px' 
                     }}>
-                        {gitPaths.map(p => (
+                        {config.git_paths.map(p => (
                             <div key={p} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                                 <span style={{ fontSize: '0.85rem', color: '#cbd5e1' }} className="truncate">{p}</span>
                                 <button onClick={() => removeGitPath(p)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}>×</button>
                             </div>
                         ))}
-                        {gitPaths.length === 0 && <span style={{fontSize: '0.8rem', color: '#64748b'}}>No repositories added yet.</span>}
+                        {config.git_paths.length === 0 && <span style={{fontSize: '0.8rem', color: '#64748b'}}>No repositories added yet.</span>}
                     </div>
                   </div>
 
@@ -459,8 +474,8 @@ function App() {
                      <label className="switch">
                        <input 
                          type="checkbox" 
-                         checked={deepAnalysis}
-                         onChange={(e) => setDeepAnalysis(e.target.checked)}
+                         checked={config.deep_analysis}
+                         onChange={(e) => updateConfig('deep_analysis', e.target.checked)}
                        />
                        <span className="slider round"></span>
                      </label>
@@ -470,8 +485,8 @@ function App() {
                   <div className="mb-4">
                      <label>Custom Rules</label>
                      <textarea 
-                        value={customRules} 
-                        onChange={(e) => setCustomRules(e.target.value)}
+                        value={config.custom_rules} 
+                        onChange={(e) => updateConfig('custom_rules', e.target.value)}
                         placeholder="e.g. Always include a quote..."
                         style={{ height: '80px', resize: 'none' }}
                      />
@@ -480,8 +495,8 @@ function App() {
                   <div className="mb-4">
                      <label>Export Template</label>
                      <textarea 
-                        value={reportTemplate} 
-                        onChange={(e) => setReportTemplate(e.target.value)}
+                        value={config.report_template} 
+                        onChange={(e) => updateConfig('report_template', e.target.value)}
                         style={{ height: '80px', resize: 'none' }}
                      />
                   </div>
