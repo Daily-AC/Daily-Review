@@ -16,6 +16,7 @@ interface GitCommit {
   author: string;
   time: number;
   repo_name?: string;
+  diff?: string; // Added diff
 }
 
 function App() {
@@ -31,6 +32,7 @@ function App() {
   const [apiProvider, setApiProvider] = useState('openai');
   const [baseUrl, setBaseUrl] = useState('');
   const [modelName, setModelName] = useState('gpt-4o');
+  const [deepAnalysis, setDeepAnalysis] = useState(false); // New State
   
   // Custom Rules
   const [customRules, setCustomRules] = useState('');
@@ -53,6 +55,7 @@ function App() {
     const savedModel = localStorage.getItem('modelName');
     const savedRules = localStorage.getItem('customRules');
     const savedTemplate = localStorage.getItem('reportTemplate');
+    const savedDeepAnalysis = localStorage.getItem('deepAnalysis');
     
     if (savedKey) setApiKey(savedKey);
     if (savedPaths) {
@@ -63,6 +66,7 @@ function App() {
     if (savedModel) setModelName(savedModel);
     if (savedRules) setCustomRules(savedRules);
     if (savedTemplate) setReportTemplate(savedTemplate);
+    if (savedDeepAnalysis) setDeepAnalysis(savedDeepAnalysis === 'true');
 
     loadLogs();
   }, []);
@@ -84,6 +88,7 @@ function App() {
     localStorage.setItem('modelName', modelName);
     localStorage.setItem('customRules', customRules);
     localStorage.setItem('reportTemplate', reportTemplate);
+    localStorage.setItem('deepAnalysis', String(deepAnalysis));
     alert('Settings Saved Successfully!');
   };
 
@@ -103,7 +108,7 @@ function App() {
     try {
       await invoke('save_log', { content: newLog, logType: 'manual' });
       setNewLog('');
-      await loadLogs(); // Await the refresh
+      await loadLogs(); 
     } catch (e) {
       alert('Failed to save log: ' + e);
     }
@@ -113,7 +118,7 @@ function App() {
       if (!confirm('Delete this log?')) return;
       try {
           await invoke('delete_log', { id });
-          await loadLogs(); // Await the refresh
+          await loadLogs(); 
       } catch (e) {
           alert('Failed to delete log: ' + e);
       }
@@ -126,8 +131,15 @@ function App() {
       return;
     }
     try {
-      const commits = await invoke<GitCommit[]>('scan_git_repos', { paths: gitPaths });
+      // Pass deepAnalysis param (camelCase for Tauri)
+      const commits = await invoke<GitCommit[]>('scan_git_repos', { 
+          paths: gitPaths, 
+          deepAnalysis: deepAnalysis 
+      });
       setGitLogs(commits);
+      if (deepAnalysis) {
+          alert(`Synced ${commits.length} commits with deep analysis.`);
+      }
     } catch (e) {
       alert('Git Sync Failed: ' + e);
     }
@@ -135,11 +147,18 @@ function App() {
 
   const generatePrompt = (type: 'analysis' | 'export') => {
       const logsText = logs.map(l => `- ${l.content}`).join('\n');
-      const gitText = gitLogs.map(g => `- [${g.repo_name}] ${g.message}`).join('\n');
+      // Include diffs in prompt
+      const gitText = gitLogs.map(g => {
+          let text = `- [${g.repo_name}] ${g.message}`;
+          if (g.diff) {
+              text += `\n  Code Diff Summary:\n\`\`\`\n${g.diff}\n\`\`\``;
+          }
+          return text;
+      }).join('\n');
       
       let baseInstruction = "";
       if (type === 'analysis') {
-          baseInstruction = "Provide a comprehensive summary, 3 improvements, and 1 key knowledge point.";
+          baseInstruction = "Provide a comprehensive summary, 3 improvements, and 1 key knowledge point. If code diffs are provided, use them to explain technical details.";
       } else {
           baseInstruction = `Strictly follow the format below:\n\nFormat Template:\n${reportTemplate}`;
       }
@@ -212,7 +231,7 @@ function App() {
           <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>settings</button>
         </nav>
       </header>
-
+      
       <main className="content-area glass-panel">
         {activeTab === 'log' && (
           <div className="animate-fade-in">
@@ -225,7 +244,9 @@ function App() {
                 onKeyDown={(e) => e.key === 'Enter' && handleAddLog()}
               />
               <button className="glass-button btn-primary" onClick={handleAddLog}>Add Note</button>
-              <button className="glass-button" onClick={handleSyncGit}>Sync Git</button>
+              <button className="glass-button" onClick={handleSyncGit}>
+                  {deepAnalysis ? 'Sync Deep' : 'Sync Git'}
+              </button>
             </div>
             
             <div className="space-y-4">
@@ -258,13 +279,31 @@ function App() {
                
                {gitLogs.length > 0 && (
                    <div style={{ marginTop: '32px', marginBottom: '16px' }}>
-                       <h3 className="text-secondary text-sm" style={{ marginBottom: '12px' }}>GIT ACTIVITY ({gitLogs.length})</h3>
+                       <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: '12px'}}>
+                            <h3 className="text-secondary text-sm">GIT ACTIVITY ({gitLogs.length})</h3>
+                            {deepAnalysis && <span style={{fontSize:'0.7rem', color:'#22d3ee', border:'1px solid #22d3ee', padding:'2px 6px', borderRadius:'4px'}}>Deep Analysis ON</span>}
+                       </div>
                        {gitLogs.map((commit, idx) => (
                          <div key={idx} className="log-item" style={{ borderLeft: '3px solid #22d3ee' }}>
                             <span className="timestamp-pill" style={{ background: 'rgba(34, 211, 238, 0.1)', color: '#22d3ee' }}>
                                 {commit.repo_name}
                             </span>
-                            <span style={{ color: '#cbd5e1', fontSize: '0.95em' }}>{commit.message}</span>
+                            <div style={{ flex: 1 }}>
+                                <div style={{ color: '#cbd5e1', fontSize: '0.95em' }}>{commit.message}</div>
+                                {commit.diff && (
+                                    <div style={{ 
+                                        marginTop: '8px', 
+                                        fontSize: '0.8rem', 
+                                        fontFamily: 'monospace', 
+                                        color: '#94a3b8',
+                                        maxHeight: '60px',
+                                        overflow: 'hidden',
+                                        position: 'relative'
+                                    }}>
+                                        {commit.diff.substring(0, 150)}...
+                                    </div>
+                                )}
+                            </div>
                          </div>
                        ))}
                    </div>
@@ -318,6 +357,7 @@ function App() {
              {!reviewResult && !isAiLoading && (
                  <div style={{ textAlign: 'center', marginTop: '100px', color: 'var(--text-secondary)' }}>
                      <p>Ready to analyze {logs.length} logs and {gitLogs.length} commits.</p>
+                     {deepAnalysis && <p style={{color: '#22d3ee', fontSize: '0.9rem', marginTop:'8px'}}>Deep Analysis Enabled</p>}
                  </div>
              )}
           </div>
@@ -401,6 +441,31 @@ function App() {
                         {gitPaths.length === 0 && <span style={{fontSize: '0.8rem', color: '#64748b'}}>No repositories added yet.</span>}
                     </div>
                   </div>
+
+                  {/* Deep Analysis Toggle */}
+                   <div className="mb-4" style={{ 
+                       background: 'rgba(34, 211, 238, 0.05)', 
+                       padding: '12px', 
+                       borderRadius: '8px', 
+                       border: '1px solid rgba(34, 211, 238, 0.1)',
+                       display: 'flex',
+                       alignItems: 'center',
+                       justifyContent: 'space-between'
+                   }}>
+                     <div>
+                       <label style={{marginBottom: '4px', display:'block', color:'#e2e8f0'}}>Deep Git Analysis</label>
+                       <span style={{fontSize: '0.75rem', color: '#94a3b8'}}>Analyze code diffs for better insights. (Slower)</span>
+                     </div>
+                     <label className="switch">
+                       <input 
+                         type="checkbox" 
+                         checked={deepAnalysis}
+                         onChange={(e) => setDeepAnalysis(e.target.checked)}
+                       />
+                       <span className="slider round"></span>
+                     </label>
+                   </div>
+
 
                   <div className="mb-4">
                      <label>Custom Rules</label>

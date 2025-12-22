@@ -20,7 +20,8 @@ pub struct GitCommit {
     message: String,
     author: String,
     time: i64,
-    repo_name: Option<String>, // Added to distinguish repos
+    repo_name: Option<String>,
+    diff: Option<String>, // Added diff field
 }
 
 // Database Service
@@ -84,7 +85,13 @@ fn delete_log(state: State<DbState>, id: i64) -> Result<String, String> {
 fn get_today_logs(state: State<DbState>) -> Result<Vec<LogItem>, String> {
     let conn = state.conn.lock().map_err(|_| "Failed to lock db".to_string())?;
     
-    let mut stmt = conn.prepare("SELECT id, content, log_type, timestamp FROM logs ORDER BY id DESC").map_err(|e| e.to_string())?;
+    // UPDATED: Added filtering for today's logs only
+    let mut stmt = conn.prepare(
+        "SELECT id, content, log_type, timestamp FROM logs 
+         WHERE date(timestamp) = date('now', 'localtime')
+         ORDER BY id DESC"
+    ).map_err(|e| e.to_string())?;
+
     let logs_iter = stmt.query_map([], |row| {
         Ok(LogItem {
             id: row.get(0)?,
@@ -103,7 +110,7 @@ fn get_today_logs(state: State<DbState>) -> Result<Vec<LogItem>, String> {
 }
 
 #[tauri::command]
-fn scan_git_repos(paths: Vec<String>) -> Result<Vec<GitCommit>, String> {
+fn scan_git_repos(paths: Vec<String>, deep_analysis: bool) -> Result<Vec<GitCommit>, String> {
     let mut all_commits = Vec::new();
 
     for path in paths {
@@ -129,12 +136,40 @@ fn scan_git_repos(paths: Vec<String>) -> Result<Vec<GitCommit>, String> {
                  for line in stdout.lines() {
                      let parts: Vec<&str> = line.split('|').collect();
                      if parts.len() >= 4 {
+                         let hash = parts[0].to_string();
+                         let message = parts[1].to_string();
+                         
+                         let mut diff = None;
+                         if deep_analysis {
+                             // Fetch diff for this commit
+                             #[cfg(target_os = "windows")]
+                             let diff_output = Command::new("git")
+                                .args(&["-C", &path, "show", &hash, "--pretty=", "--patch", "--max-count=1"])
+                                .output();
+
+                             #[cfg(not(target_os = "windows"))]
+                             let diff_output = Command::new("git")
+                                .args(&["-C", &path, "show", &hash, "--pretty=", "--patch", "--max-count=1"])
+                                .output();
+                             
+                             if let Ok(dout) = diff_output {
+                                 let full_diff = String::from_utf8_lossy(&dout.stdout).to_string();
+                                 // Truncate if too long (e.g., 3000 chars)
+                                 diff = Some(if full_diff.len() > 3000 {
+                                     format!("{}... (truncated)", &full_diff[..3000])
+                                 } else {
+                                     full_diff
+                                 });
+                             }
+                         }
+
                          all_commits.push(GitCommit {
-                             hash: parts[0].to_string(),
-                             message: parts[1].to_string(),
+                             hash,
+                             message,
                              author: parts[2].to_string(),
                              time: parts[3].parse().unwrap_or(0),
                              repo_name: Some(repo_name.clone()),
+                             diff,
                          });
                      }
                  }
