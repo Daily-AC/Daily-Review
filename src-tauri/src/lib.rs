@@ -212,14 +212,116 @@ async fn call_ai(request: AiRequest) -> Result<String, String> {
     }
 }
 
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "Daily Assistant", version, about = "A Daily Review Helper")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Add a new note
+    Add { 
+        content: String 
+    },
+    /// List today's notes
+    List,
+    /// Delete a note by ID
+    Del { 
+        id: i64 
+    },
+}
+
+// Helper to get DB path consistently for both CLI (headless) and GUI (Tauri)
+fn get_db_path() -> std::path::PathBuf {
+    // Attempt to match Tauri's default app_data_dir resolution:
+    // Windows: %APPDATA%/<identifier>
+    // Identifier: com.tauri-app.daily-assistant
+    
+    let identifier = "com.tauri-app.daily-assistant";
+    
+    #[cfg(target_os = "windows")]
+    {
+        let app_data = std::env::var("APPDATA").expect("APPDATA not set");
+        let path = std::path::PathBuf::from(app_data).join(identifier);
+        // Ensure dir exists
+        std::fs::create_dir_all(&path).expect("failed to create app data dir");
+        path.join("daily_assistant.db")
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Fallback for non-windows (linux/mac) - simplified for now as user is on Windows
+        // In a real prod app, use the `directories` crate or similar logic
+        let home = std::env::var("HOME").expect("HOME not set");
+        let path = std::path::PathBuf::from(home).join(".config").join(identifier);
+        std::fs::create_dir_all(&path).expect("failed to create app data dir");
+        path.join("daily_assistant.db")
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let cli = Cli::parse();
+
+    // Check if a CLI command is present
+    if let Some(cmd) = cli.command {
+        // HEADLESS MODE: Direct DB access, no Tauri runtime
+        let db_path = get_db_path();
+        let db_state = DbState::init(db_path).expect("Failed to initialize database");
+        let conn = db_state.conn.lock().unwrap();
+
+        match cmd {
+            Commands::Add { content } => {
+                conn.execute(
+                    "INSERT INTO logs (content, log_type, timestamp) VALUES (?1, ?2, datetime('now', 'localtime'))",
+                    [&content, &"note".to_string()],
+                ).unwrap();
+                println!("✅ Note added: {}", content);
+            },
+            Commands::List => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, timestamp, content FROM logs 
+                     WHERE date(timestamp) = date('now', 'localtime')
+                     ORDER BY id ASC"
+                ).unwrap();
+                let logs = stmt.query_map([], |row| {
+                    let id: i64 = row.get(0)?;
+                    let ts: String = row.get(1)?;
+                    let content: String = row.get(2)?;
+                    Ok((id, ts, content))
+                }).unwrap();
+
+                println!("📅 Today's Notes:");
+                for log in logs {
+                    if let Ok((id, ts, content)) = log {
+                        let time_part = ts.split_whitespace().nth(1).unwrap_or(&ts);
+                        println!("[{}] {}  {}", id, &time_part[0..5], content);
+                    }
+                }
+            },
+            Commands::Del { id } => {
+                let count = conn.execute("DELETE FROM logs WHERE id = ?1", [&id]).unwrap();
+                if count > 0 {
+                    println!("🗑️ Deleted note ID: {}", id);
+                } else {
+                    println!("❌ Note ID {} not found.", id);
+                }
+            }
+        }
+        // Exit immediately
+        return;
+    }
+
+    // GUI MODE: Launch Tauri
     tauri::Builder::default()
         .setup(|app| {
-            let app_handle = app.handle();
-            let app_data_dir = app.path().app_data_dir().expect("failed to get app data dir");
-            std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
-            let db_path = app_data_dir.join("daily_assistant.db");
+            // Note: We use the same get_db_path logic or rely on Tauri to verify transparency
+            // Using the same helper function ensures consistency
+            let db_path = get_db_path();
             
             let db_state = DbState::init(db_path).expect("Failed to initialize database");
             app.manage(db_state);
