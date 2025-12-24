@@ -274,7 +274,7 @@ fn scan_git_repos(paths: Vec<String>, deep_analysis: bool) -> Result<Vec<GitComm
                              
                              if let Ok(d) = dout {
                                  let raw = String::from_utf8_lossy(&d.stdout).to_string();
-                                 diff = Some(if raw.len() > 3000 { format!("{}... (truncated)", &raw[..3000]) } else { raw });
+                                 diff = Some(if raw.chars().count() > 3000 { format!("{}... (truncated)", raw.chars().take(3000).collect::<String>()) } else { raw });
                              }
                          }
                          all_commits.push(GitCommit {
