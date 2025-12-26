@@ -1,11 +1,14 @@
-use tauri::{State, Manager};
+use tauri::{State, Manager, AppHandle};
 use std::sync::Mutex;
 use rusqlite::{Connection, Result};
 use serde::{Serialize, Deserialize};
 use reqwest::Client;
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use clap::{Parser, Subcommand};
 use tokio::runtime::Runtime;
+use chrono::Local;
 
 // Domain Models
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,6 +39,12 @@ pub struct AppConfig {
     pub custom_rules: String,
     pub report_template: String,
     pub deep_analysis: bool,
+    // Feishu Configuration
+    pub feishu_app_id: Option<String>,
+    pub feishu_app_secret: Option<String>,
+    pub feishu_target_email: Option<String>,
+    pub schedule_time: Option<String>, // Format: "HH:MM"
+    pub feishu_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -83,6 +92,11 @@ impl Default for AppConfig {
 * **问题**：[简述核心问题]
     **解决**：[已采取的措施 或 下一步计划]"#.to_string(),
             deep_analysis: false,
+            feishu_app_id: None,
+            feishu_app_secret: None,
+            feishu_target_email: None,
+            schedule_time: None,
+            feishu_enabled: false,
         }
     }
 }
@@ -346,6 +360,18 @@ enum Commands {
         /// Enable or disable Deep Git Analysis (fetching code diffs)
         #[arg(long)]
         deep_analysis: Option<bool>,
+        /// Set Feishu App ID
+        #[arg(long)]
+        feishu_app_id: Option<String>,
+        /// Set Feishu App Secret
+        #[arg(long)]
+        feishu_app_secret: Option<String>,
+        /// Set Feishu Target Email
+        #[arg(long)]
+        feishu_target: Option<String>,
+        /// Set Schedule Time (HH:MM)
+        #[arg(long)]
+        schedule: Option<String>,
     },
     /// Sync Git repositories (Use --deep to include diffs)
     Sync {
@@ -359,6 +385,23 @@ enum Commands {
         #[arg(long)]
         export: bool,
     },
+    /// Manage the application service (Status, Start, Stop)
+    Service {
+        #[command(subcommand)]
+        action: ServiceCommands,
+    },
+    /// Internal: Run as a background daemon (do not use directly)
+    Daemon,
+}
+
+#[derive(Subcommand)]
+enum ServiceCommands {
+    /// Check if the service is running
+    Status,
+    /// Start the service
+    Start,
+    /// Stop the service
+    Stop,
 }
 
 fn get_db_path() -> std::path::PathBuf {
@@ -404,7 +447,7 @@ pub fn run() {
                  if conn.execute("DELETE FROM logs WHERE id = ?1", [&id]).unwrap() > 0 { println!("🗑️ Deleted note ID: {}", id); } 
                  else { println!("❌ Note ID {} not found.", id); }
             },
-            Commands::Config { api_key, add_repo, deep_analysis } => {
+            Commands::Config { api_key, add_repo, deep_analysis, feishu_app_id, feishu_app_secret, feishu_target, schedule } => {
                 let mut config = load_config();
                 let mut updated = false;
                 if let Some(k) = api_key { config.api_key = k; updated = true; println!("Updated API Key"); }
@@ -412,6 +455,15 @@ pub fn run() {
                     if !config.git_paths.contains(&repo) { config.git_paths.push(repo); updated = true; println!("Added Repo"); }
                 }
                 if let Some(da) = deep_analysis { config.deep_analysis = da; updated = true; println!("Updated Deep Analysis to {}", da); }
+                if let Some(id) = feishu_app_id { config.feishu_app_id = Some(id); updated = true; println!("Updated Feishu App ID"); }
+                if let Some(secret) = feishu_app_secret { config.feishu_app_secret = Some(secret); updated = true; println!("Updated Feishu App Secret"); }
+                if let Some(target) = feishu_target { config.feishu_target_email = Some(target); updated = true; println!("Updated Feishu Target Email"); }
+                if let Some(time) = schedule { 
+                    config.schedule_time = Some(time); 
+                    config.feishu_enabled = true; 
+                    updated = true; 
+                    println!("Updated Schedule Time & Enabled Feishu"); 
+                }
                 
                 if updated { save_config_file(&config).unwrap(); }
                 println!("Current Config: {:#?}", config);
@@ -464,21 +516,241 @@ pub fn run() {
                     Err(e) => println!("❌ AI Error: {}", e),
                 }
             }
+
+
+            Commands::Service { action } => {
+                match action {
+                     ServiceCommands::Status => {
+                         // Check daily-assistant.exe
+                         let output1 = Command::new("tasklist")
+                             .args(&["/FI", "IMAGENAME eq daily-assistant.exe", "/FO", "CSV", "/NH"])
+                             .output()
+                             .expect("Failed to execute tasklist");
+                         let stdout1 = String::from_utf8_lossy(&output1.stdout);
+
+                         // Check da.exe
+                         let output2 = Command::new("tasklist")
+                             .args(&["/FI", "IMAGENAME eq da.exe", "/FO", "CSV", "/NH"])
+                             .output()
+                             .expect("Failed to execute tasklist");
+                         let stdout2 = String::from_utf8_lossy(&output2.stdout);
+
+                         if stdout1.contains("daily-assistant.exe") || stdout2.contains("da.exe") {
+                             println!("🟢 Service is RUNNING.");
+                         } else {
+                             println!("🔴 Service is STOPPED.");
+                         }
+                     },
+                     ServiceCommands::Start => {
+                         let exe = std::env::current_exe().unwrap();
+                         
+                         #[cfg(target_os = "windows")]
+                         {
+                             // 0x08000000 is CREATE_NO_WINDOW
+                             Command::new(exe)
+                                 .arg("daemon")
+                                 .creation_flags(0x08000000) 
+                                 .spawn()
+                                 .expect("Failed to start daemon service");
+                         }
+                         #[cfg(not(target_os = "windows"))]
+                         {
+                             Command::new(exe)
+                                 .arg("daemon")
+                                 .spawn()
+                                 .expect("Failed to start daemon service");
+                         }
+                         
+                         println!("🚀 Service Started (Background Mode).");
+                     },
+                     ServiceCommands::Stop => {
+                         let _ = Command::new("taskkill")
+                             .args(&["/F", "/IM", "daily-assistant.exe"])
+                             .output();
+                         // Also kill "da.exe" just in case
+                         let _ = Command::new("taskkill")
+                             .args(&["/F", "/IM", "da.exe"])
+                             .output();
+                         println!("🛑 Service Stopped.");
+                     }
+                }
+            },
+            Commands::Daemon => {
+                start_scheduler();
+                // start_scheduler loops forever, so we never reach here
+            }
         }
         std::process::exit(0);
     }
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            save_log, delete_log, get_today_logs, scan_git_repos, call_ai,
+            get_config, save_config
+        ])
         .setup(|app| {
             let db_path = get_db_path();
             let db_state = DbState::init(db_path).expect("Failed to initialize database");
             app.manage(db_state);
+            
+            // Start Scheduler
+            // Start Scheduler (Thread) - Only if running GUI mode
+            std::thread::spawn(move || {
+                start_scheduler();
+            });
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            save_log, delete_log, get_today_logs, scan_git_repos, call_ai,
-            get_config, save_config // Exposed config commands
-        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// Feishu Client
+struct FeishuClient {
+    app_id: String,
+    app_secret: String,
+}
+
+impl FeishuClient {
+    fn new(app_id: String, app_secret: String) -> Self {
+        Self { app_id, app_secret }
+    }
+
+    async fn get_token(&self) -> Result<String, String> {
+        let client = Client::new();
+        let res = client.post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
+            .json(&serde_json::json!({
+                "app_id": self.app_id,
+                "app_secret": self.app_secret
+            }))
+            .send()
+            .await.map_err(|e| e.to_string())?;
+            
+        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        if let Some(token) = json.get("tenant_access_token") {
+            Ok(token.as_str().unwrap().to_string())
+        } else {
+            Err(format!("Auth Failed: {:?}", json))
+        }
+    }
+
+    async fn get_user_id(&self, token: &str, email: &str) -> Result<String, String> {
+        let client = Client::new();
+        let url = "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id?user_id_type=open_id";
+        let res = client.post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({
+                "emails": [email]
+            }))
+            .send()
+            .await.map_err(|e| e.to_string())?;
+            
+        let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        // Path: data.user_list[0].user_id
+        if let Some(list) = json.get("data").and_then(|d| d.get("user_list")).and_then(|l| l.as_array()) {
+            if let Some(user) = list.first() {
+                if let Some(id) = user.get("user_id") {
+                    return Ok(id.as_str().unwrap().to_string());
+                }
+            }
+        }
+        Err(format!("User not found for email: {}", email))
+    }
+
+    async fn send_message(&self, token: &str, receive_id: &str, content: &str) -> Result<(), String> {
+        let client = Client::new();
+        let url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id";
+        let res = client.post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({
+                "receive_id": receive_id,
+                "msg_type": "text",
+                "content": serde_json::json!({ "text": content }).to_string()
+            }))
+            .send()
+            .await.map_err(|e| e.to_string())?;
+            
+        let status = res.status();
+        if !status.is_success() {
+             let text = res.text().await.unwrap_or_default();
+             return Err(format!("Send failed: {} - {}", status, text));
+        }
+        Ok(())
+    }
+}
+
+// Scheduler Logic
+fn start_scheduler() {
+    let rt = Runtime::new().unwrap();
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let config = load_config();
+        
+        if !config.feishu_enabled { continue; }
+        if let Some(time_str) = config.schedule_time.clone() {
+            let now = Local::now().format("%H:%M").to_string();
+            if now == time_str {
+                println!("⏰ It's time! ({}) Starting scheduled report...", now);
+                // Trigger logic
+                rt.block_on(async {
+                    if let Err(e) = run_scheduled_job(config).await {
+                        println!("❌ Scheduled Job Failed: {}", e);
+                    }
+                });
+                // Avoid double-running in the same minute
+                std::thread::sleep(std::time::Duration::from_secs(60)); 
+            }
+        }
+    }
+}
+
+async fn run_scheduled_job(config: AppConfig) -> Result<(), String> {
+    // 1. Collect Data
+    // We need DB access. Since we are in a thread, we can try to use app.state().
+    // But rusqlite usage in threads is tricky if not careful.
+    // For simplicity, we might just open a new connection or use the CLI commands' logic.
+    // Let's re-use the logic from Review command but purely in Rust.
+    
+    let db_path = get_db_path();
+    let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+    
+    // 1. Logs
+    let mut logs = vec![];
+    let mut stmt = conn.prepare("SELECT id, content, log_type, timestamp FROM logs WHERE date(timestamp) = date('now', 'localtime') ORDER BY id DESC").map_err(|e| e.to_string())?;
+    let iter = stmt.query_map([], |row| Ok(LogItem { id: row.get(0)?, content: row.get(1)?, log_type: row.get(2)?, timestamp: row.get(3)? })).map_err(|e| e.to_string())?;
+    for l in iter { logs.push(l.unwrap()); }
+
+    // 2. Commits
+    let commits = scan_git_repos(config.git_paths.clone(), config.deep_analysis).unwrap_or_default();
+
+    if logs.is_empty() && commits.is_empty() {
+        return Err("No logs or commits today. Skipping report.".to_string());
+    }
+
+    // 3. Prompt
+    let prompt = generate_prompt_logic(&logs, &commits, &config, "analysis");
+
+    // 4. AI
+    let req = AiRequest {
+        provider: config.provider.clone(),
+        api_key: config.api_key.clone(),
+        model: config.model.clone(),
+        base_url: config.base_url.clone(),
+        prompt,
+    };
+    let report = call_ai(req).await?;
+
+    // 5. Send to Feishu
+    if let (Some(app_id), Some(secret), Some(target)) = (config.feishu_app_id, config.feishu_app_secret, config.feishu_target_email) {
+        println!("🚀 Sending to Feishu...");
+        let client = FeishuClient::new(app_id, secret);
+        let token = client.get_token().await?;
+        let user_id = client.get_user_id(&token, &target).await?;
+        client.send_message(&token, &user_id, &report).await?;
+        println!("✅ Feishu Message Sent!");
+    } else {
+        println!("⚠️ Feishu config missing, skipping send.");
+    }
+    
+    Ok(())
 }
